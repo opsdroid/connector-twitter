@@ -1,73 +1,74 @@
 import logging
 import aiohttp
 import asyncio
+import math
+from aioauth_client import TwitterClient
 
 from opsdroid.connector import Connector
 from opsdroid.message import Message
 
 
-class ConnectorTelegram(Connector):
+_LOGGER = logging.getLogger(__name__)
+
+
+class ConnectorTwitter(Connector):
 
     def __init__(self, config):
         """Setup the connector."""
-        logging.debug("Loaded telegram connector")
+        logging.debug("Loaded twitter connector")
         super().__init__(config)
-        self.name = "telegram"
-        self.token = config["token"]
-        self.latest_update = None
-
-    def build_url(self, method):
-        return "https://api.telegram.org/bot{}/{}".format(self.token, method)
+        self.name = "twitter"
+        self.latest_dm_update = None
+        self.config = config
+        try:
+            self.client = TwitterClient(
+                consumer_key=self.config["consumer_key"],
+                consumer_secret=self.config["consumer_secret"],
+                oauth_token=self.config["oauth_token"],
+                oauth_token_secret=self.config["oauth_token_secret"],
+            )
+        except KeyError as e:
+            _LOGGER.error("Missing auth tokens!")
 
     async def connect(self, opsdroid):
-        """Connect to telegram."""
-        logging.debug("Connecting to telegram")
-        async with aiohttp.ClientSession() as session:
-            async with session.get(self.build_url("getMe")) as resp:
-                json = await resp.json()
-                logging.debug("Connected to telegram as %s",
-                              json["result"]["username"])
+        """Connect to twitter."""
+        logging.debug("Connecting to twitter")
 
     async def listen(self, opsdroid):
         """Listen for new message."""
         while True:
-            async with aiohttp.ClientSession() as session:
-                data = {}
-                if self.latest_update is not None:
-                    data["offset"] = self.latest_update
-                async with session.post(self.build_url("getUpdates"),
-                                        data=data) as resp:
-                    if resp.status != 200:
-                        logging.error("Telegram error %s, %s",
-                                      resp.status, resp.text())
-                    else:
-                        json = await resp.json()
-                        if len(json["result"]) > 0:
-                            logging.debug("Received %i messages from telegram",
-                                          len(json["result"]))
-                        for response in json["result"]:
-                            logging.debug(response)
-                            if self.latest_update is None or \
-                                    self.latest_update <= response["update_id"]:
-                                self.latest_update = response["update_id"] + 1
-                            if "text" in response["message"]:
-                                message = Message(response["message"]["text"],
-                                                  response["message"]["from"]["username"],
-                                                  response["message"]["chat"],
-                                                  self)
-                                await opsdroid.parse(message)
+            if self.config.get("enable_dms", True):
+                await self._listen_dms(opsdroid)
 
-                    await asyncio.sleep(0.5)
-
+    async def _listen_dms(self, opsdroid):
+        if self.latest_dm_update is not None:
+            params = {"since_id": self.latest_dm_update}
+        else:
+            params = {}
+        resp = await self.client.request(
+            'GET', 'direct_messages.json', params=params)
+        direct_messages = await resp.json()
+        resp.release()
+        for direct_message in direct_messages:
+            _LOGGER.debug(direct_message)
+            if self.latest_dm_update is None or self.latest_dm_update < direct_message["id"]:
+                self.latest_dm_update = direct_message["id"]
+            message = Message(direct_message["text"],
+                              direct_message["sender_id"],
+                              "dm",
+                              self)
+            await opsdroid.parse(message)
+        await asyncio.sleep(60)  # Requests limited to 15 per 15 min window
 
     async def respond(self, message):
         """Respond with a message."""
+        if message.room == "dm" and self.config.get("enable_dms", True):
+            await self._respond_dm(message)
+
+    async def _respond_dm(self, message):
         logging.debug("Responding with: " + message.text)
-        async with aiohttp.ClientSession() as session:
-            data = {}
-            data["chat_id"] = message.room["id"]
-            data["text"] = message.text
-            async with session.post(self.build_url("sendMessage"),
-                                    data=data) as resp:
-                if resp.status == 200:
-                    logging.debug("Successfully responded")
+        params = {"user_id": message.user,
+                  "text": message.text}
+        resp = await self.client.request(
+            'POST', 'direct_messages/new.json', params=params)
+        resp.release()
