@@ -1,1 +1,1 @@
-aioauth-client>=0.9.2
+tweepy==3.5.0
