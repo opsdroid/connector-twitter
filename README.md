@@ -29,7 +29,3 @@ connectors:
     enable_dms: true  # Should the bot respond to Direct Messages
     enable_tweets: true  # Should the bot respond to tweets
 ```
-
-## License
-
-GNU General Public License Version 3 (GPLv3)
