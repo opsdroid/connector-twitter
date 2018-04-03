@@ -105,7 +105,7 @@ class ConnectorTwitter(Connector):
                           self)
         self.opsdroid.eventloop.create_task(self.opsdroid.parse(message))
 
-    async def respond(self, message):
+    async def respond(self, message, room=None):
         """Respond with a message."""
         _LOGGER.debug("Responding via twitter")
         _LOGGER.debug(message.user)
